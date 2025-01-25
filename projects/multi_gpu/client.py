@@ -1,39 +1,67 @@
 import base64
-import requests
-import numpy as np
+import asyncio
+import aiohttp
 from loguru import logger
-from joblib import Parallel, delayed
 
 
-def to_b64(file_path):
-    try:
-        with open(file_path, 'rb') as f:
-            return base64.b64encode(f.read()).decode('utf-8')
-    except Exception as e:
-        raise Exception(f'File: {file_path} - Info: {e}')
+def to_b64(file):
+    with open(file, 'rb') as f:
+        return base64.b64encode(f.read()).decode('utf-8')
 
 
-def do_parse(file_path, url='http://127.0.0.1:8000/predict', **kwargs):
-    try:
-        response = requests.post(url, json={
-            'file': to_b64(file_path),
-            'kwargs': kwargs
-        })
+async def do_parse(file, url, **kwargs):
+    timeout = aiohttp.ClientTimeout(total=None)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        data = {'file': to_b64(file), 'kwargs': kwargs}
+        async with session.post(url, json=data) as response:
+            if response.status == 200:
+                result = await response.json()
+                return result | {'file_path': file}
+            else:
+                raise Exception(await response.text())
 
-        if response.status_code == 200:
-            output = response.json()
-            output['file_path'] = file_path
-            return output
-        else:
-            raise Exception(response.text)
-    except Exception as e:
-        logger.error(f'File: {file_path} - Info: {e}')
+
+async def worker(url, queue, **kwargs):
+    while not queue.empty():
+        try:
+            file = queue.get_nowait()
+            info = f'File: {file} - Info: '
+            result = await do_parse(file, url, **kwargs)
+            logger.success(info + result['output_dir'])
+        except Exception as e:
+            logger.error(info + str(e))
+        finally:
+            queue.task_done()
+
+
+async def run_tasks(files, urls, workers_per_url):
+    queue = asyncio.Queue()
+    for file in files:
+        queue.put_nowait(file)
+
+    max_workers = min(len(files), workers_per_url * len(urls))
+    workers_per_url = max(1, max_workers // len(urls))
+
+    workers = []
+    for url in urls:
+        for _ in range(workers_per_url):
+            workers.append(worker(url, queue))
+
+    await asyncio.gather(*workers)
+
+
+async def main():
+    urls = [
+        'http://127.0.0.1:8000/predict',
+    ]
+
+    files = [
+        'demo/small_ocr.pdf',
+    ]
+
+    await run_tasks(files, urls, workers_per_url=16)
 
 
 if __name__ == '__main__':
-    files = ['demo/small_ocr.pdf']
-    n_jobs = np.clip(len(files), 1, 8)
-    results = Parallel(n_jobs, prefer='threads', verbose=10)(
-        delayed(do_parse)(p) for p in files
-    )
-    print(results)
+    logger.add('{time:%Y%m%d_%H%M%S}.log')
+    asyncio.run(main())

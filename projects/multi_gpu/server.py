@@ -36,16 +36,19 @@ class MinerUAPI(ls.LitAPI):
     def decode_request(self, request):
         file = request['file']
         file = self.cvt2pdf(file)
-        opts = request.get('kwargs', {})
-        opts.setdefault('debug_able', False)
-        opts.setdefault('parse_method', 'auto')
-        return file, opts
+        args = request.get('kwargs', {})
+        args['pdf_bytes'] = file
+        args.setdefault('model_list', [])
+        args.setdefault('debug_able', False)
+        args.setdefault('parse_method', 'auto')
+        args.setdefault('output_dir', self.output_dir)
+        args.setdefault('pdf_file_name', str(uuid.uuid4()))
+        return args
 
-    def predict(self, inputs):
+    def predict(self, args):
         try:
-            pdf_name = str(uuid.uuid4())
-            output_dir = self.output_dir.joinpath(pdf_name)
-            self.do_parse(self.output_dir, pdf_name, inputs[0], [], **inputs[1])
+            output_dir = Path(args['output_dir']) / args['pdf_file_name']
+            self.do_parse(**args)
             return output_dir
         except Exception as e:
             shutil.rmtree(output_dir, ignore_errors=True)
@@ -90,9 +93,9 @@ class MinerUAPI(ls.LitAPI):
 if __name__ == '__main__':
     server = ls.LitServer(
         MinerUAPI(output_dir='/tmp'),
+        workers_per_device=1,
         accelerator='cuda',
         devices='auto',
-        workers_per_device=1,
         timeout=False
     )
     server.run(port=8000)
